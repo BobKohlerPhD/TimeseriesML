@@ -1,6 +1,5 @@
 import pandas as pd
 import numpy as np
-import shap
 import matplotlib.pyplot as plt
 import tensorflow as tf
 from tensorflow.keras.models import Model
@@ -8,40 +7,36 @@ from tensorflow.keras.layers import Input, LSTM, Dense, Layer, Dropout, BatchNor
 from tensorflow.keras.optimizers import Adam
 from sklearn.impute import SimpleImputer
 
-
 #------------------------------#
 # Data Loading / Preprocessing #
 #------------------------------#
 def load_and_prepare_data(phase_csv, outcome_csv):
-    #Read data in
+
     phase_wide = pd.read_csv(phase_csv)
     outcome_data = pd.read_csv(outcome_csv, usecols=['subject_id', 'dep_anx_composite.Final'])
-
-    #Merge data
     data_merged = pd.merge(phase_wide, outcome_data, on='subject_id')
 
     #Drop non-feature columns
     x_data = data_merged.drop(columns=['subject_id', 'dep_anx_composite.Final'])
 
-    # Select columns related to drinking data (PreBaseline or Treatment)
+    # Select drinking data (PreBaseline or Treatment)
     drinking_cols = [col for col in x_data.columns
                      if col.startswith("PreBaseline_") or col.startswith("Treatment_")]
 
-    # Arrange by day (assumes day is the integer at the end of the variable name)
+    # Arrange by day
     drinking_cols_sorted = sorted(drinking_cols, key=lambda x: int(x.split('_')[-1]))
-    print("Ordered columns:", drinking_cols_sorted)
-
-    # Create feature array and extract outcome
     x_data_sorted = x_data[drinking_cols_sorted]
     x_array = x_data_sorted.to_numpy()
+
+    # Get outcome to predict
     y_data = data_merged['dep_anx_composite.Final']
 
-    # Reshape data [samples, timesteps(days), features]
+    # Reshape feature data [samples, timesteps(days), features]
     num_samples, num_timesteps = x_data_sorted.shape
     x_array = x_array.reshape(num_samples, num_timesteps, 1)
     print("x_array shape:", x_array.shape)
 
-    # Mean Imputation
+    # Mean impute missing data
     imputer = SimpleImputer(missing_values=np.nan, strategy='mean')
     x_array_reshaped = x_array.reshape(-1, 1)
     x_imputed = imputer.fit_transform(x_array_reshaped)
@@ -51,7 +46,7 @@ def load_and_prepare_data(phase_csv, outcome_csv):
 
 
 # ------------------------------#
-#        Attention Layer        #
+#     SHAP Attention Layer      #
 # ------------------------------#
 class SimpleAttention(Layer):
     def __init__(self, **kwargs):
@@ -84,19 +79,19 @@ def build_lstm_model(num_timesteps, features=1):
     input_layer = Input(shape=(num_timesteps, features), name='input_layer')
 
     # LSTM layers w/ return sequence for time series
-    lstm_out_1 = LSTM(20, return_sequences=True, name='lstm_layer_1')(input_layer)
-    lstm_out_2 = LSTM(10, return_sequences=True, name='lstm_layer_2')(lstm_out_1)
+    lstm_out_1 = LSTM(30, return_sequences=True, name='lstm_layer_1')(input_layer)
+    lstm_out_2 = LSTM(15, return_sequences=True, name='lstm_layer_2')(lstm_out_1)
 
     # Regularization and normalization
-    dropout_layer = Dropout(0.2, name='dropout_layer')(lstm_out_2)
+    dropout_layer = Dropout(0.1, name='dropout_layer')(lstm_out_2)
     batch_norm = BatchNormalization(name='batch_norm')(dropout_layer)
 
     # Attention Function
     attention_out = SimpleAttention(name='simple_attention')(batch_norm)
 
     # Dense/Output Layer
-    dense_out_1 = Dense(20, activation='relu', name='dense_layer_1')(attention_out)
-    dense_out_2 = Dense(10, activation='relu', name='dense_layer_2')(dense_out_1)
+    dense_out_1 = Dense(30, activation='relu', name='dense_layer_1')(attention_out)
+    dense_out_2 = Dense(20, activation='relu', name='dense_layer_2')(dense_out_1)
     output_layer = Dense(1, name='output_layer')(dense_out_2)
 
     model = Model(inputs=input_layer, outputs=output_layer)
@@ -140,21 +135,6 @@ def perform_shap_analysis(model, x_data, num_timesteps, features=1, background_s
 
 def perform_shap_analysis_robust(model, x_data, num_timesteps, features=1,
                                  background_samples=50, nsamples=200, iterations=3):
-    """
-    Performs robust SHAP analysis using KernelExplainer by averaging results over multiple runs.
-
-    Parameters:
-        model: Trained  model.
-        x_data: Input data (shape= [samples, timesteps, features)].
-        num_timesteps: Number of days in feature set.
-        features: Number of features per day.
-        background_samples: Number of samples for background dataset.
-        nsamples: Number of samples for KernelExplaine estimation.
-        iterations: Number of iterations to average  SHAP values.
-
-    Returns:
-        Averaged SHAP across iterations.
-    """
     # Flatten x_data for  explainer (each sample is a flat vector)
     x_flat = x_data.reshape(x_data.shape[0], -1)
     shap_values_list = []
@@ -221,6 +201,8 @@ if __name__ == "__main__":
     })
     print(comparison_df)
 
-    # SHAP Analysis
+    # SHAP
     perform_shap_analysis_robust(model, x_array_imputed, num_timesteps,
-                              features=1, background_samples=50, nsamples=200, iterations=3)
+                              features=1, background_samples=50, nsamples=20, iterations=3)
+
+    plot_shap_time_importances(avg_shap_values, num_timesteps)
